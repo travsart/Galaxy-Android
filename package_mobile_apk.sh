@@ -44,7 +44,8 @@ for lib in libgame.so libmain.so libreserve.so; do
 done
 
 rm -f $OUT/res.zip
-"$BT/aapt2$EXE" compile --dir platform/android/res -o $OUT/res.zip
+# The mobile manifest themes come from platform/mobile/res (Theme.GalaxyAndroid).
+"$BT/aapt2$EXE" compile --dir platform/mobile/res -o $OUT/res.zip
 
 package_flavor() {
   local MANIFEST="$1"
@@ -53,7 +54,7 @@ package_flavor() {
 
   rm -f $OUT/base.apk $OUT/aligned.apk
   "$BT/aapt2$EXE" link -o $OUT/base.apk --manifest "$MANIFEST" -R $OUT/res.zip --auto-add-overlay \
-    -I "$(native_path "$PLATFORM/android.jar")" --min-sdk-version 30 --target-sdk-version 34
+    -I "$(native_path "$PLATFORM/android.jar")" --min-sdk-version 28 --target-sdk-version 34
 
   (cd $OUT/apk && py3 - << 'PY'
 import zipfile, os

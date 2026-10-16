@@ -383,8 +383,15 @@ bool initEgl(MobileApp& a) {
 }
 
 static void enforceLandscapeOrientation(MobileApp& a) {
-    if (a.screenWidth < a.screenHeight && a.android && a.android->activity) {
-        LOGW("Surface detected in portrait (%dx%d)! Enforcing landscape mode...", a.screenWidth, a.screenHeight);
+    if (a.android && a.android->activity) {
+        int orientationChoice = mobile_ui::UIOverlay::get().settings().screenOrientationChoice;
+        // 0 = SCREEN_ORIENTATION_SENSOR_LANDSCAPE (6, auto-flips 180 deg)
+        // 1 = SCREEN_ORIENTATION_LANDSCAPE (0, natural 90 deg)
+        // 2 = SCREEN_ORIENTATION_REVERSE_LANDSCAPE (8, reverse 270 deg)
+        int requested = 6;
+        if (orientationChoice == 1) requested = 0;
+        else if (orientationChoice == 2) requested = 8;
+
         ANativeActivity* act = a.android->activity;
         JNIEnv* env = nullptr;
         act->vm->AttachCurrentThread(&env, nullptr);
@@ -393,7 +400,7 @@ static void enforceLandscapeOrientation(MobileApp& a) {
             if (actClass) {
                 jmethodID setOrient = env->GetMethodID(actClass, "setRequestedOrientation", "(I)V");
                 if (setOrient) {
-                    env->CallVoidMethod(act->clazz, setOrient, 0); // 0 = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                    env->CallVoidMethod(act->clazz, setOrient, requested);
                 }
                 env->DeleteLocalRef(actClass);
             }
@@ -459,6 +466,9 @@ bool createSurface(MobileApp& a) {
     eglSwapInterval(a.display, 1);
 
     LOGI("Window surface ready: %dx%d (GL: %s)", a.screenWidth, a.screenHeight, (const char*)glGetString(GL_RENDERER));
+    // OpenGL ES is what is running here: either the user asked for it or the
+    // Vulkan device/driver turned out to be unusable.
+    mobile_ui::get().setActiveBackend(0);
 
     updateViewport(a);
     LOGI("Viewport: x=%d, y=%d, w=%d, h=%d (fullscreen=%d)", a.vpX, a.vpY, a.vpW, a.vpH, mobile_ui::get().settings().fullscreen ? 1 : 0);
@@ -539,7 +549,7 @@ int32_t onInput(android_app* app, AInputEvent* event) {
         if (isJoystickSource) {
             if (!a->gamepadDetected) {
                 a->gamepadDetected = true;
-                mobile_ui::get().showToast("Gamepad Connected 🎮");
+                mobile_ui::get().showToast("Gamepad Connected");
             }
 
             // Left Stick (Analog Movement)
@@ -647,7 +657,7 @@ int32_t onInput(android_app* app, AInputEvent* event) {
 
         if (!a->gamepadDetected && (keyCode >= AKEYCODE_BUTTON_A && keyCode <= AKEYCODE_BUTTON_16)) {
             a->gamepadDetected = true;
-            mobile_ui::get().showToast("Gamepad Connected 🎮");
+            mobile_ui::get().showToast("Gamepad Connected");
         }
 
         int32_t keyAction = AKeyEvent_getAction(event);
@@ -776,6 +786,8 @@ void onAppCmd(android_app* app, int32_t cmd) {
             LOGI("Selected Vulkan 1.0 backend, initializing VkRenderer with native touch controls...");
             if (gpu::VkRenderer::get().init(app->window)) {
                 a->vkReady = true;
+                mobile_ui::get().setActiveBackend(1);
+                mobile_ui::get().setGpuRendererName(gpu::VkRenderer::get().deviceName());
                 a->screenWidth = ANativeWindow_getWidth(app->window);
                 a->screenHeight = ANativeWindow_getHeight(app->window);
                 enforceLandscapeOrientation(*a);
@@ -936,6 +948,67 @@ extern "C" void port_android_exit_to_launcher() {
     if (attached) vm->DetachCurrentThread();
 }
 
+static void updateWindowRefreshRate(float targetFps) {
+    static float sLastAppliedFps = -1.0f;
+    if (fabsf(sLastAppliedFps - targetFps) < 0.5f) return;
+    sLastAppliedFps = targetFps;
+
+    if (!gMobile.android || !gMobile.android->activity || !gMobile.android->activity->vm || !gMobile.android->activity->clazz) return;
+    JavaVM* vm = gMobile.android->activity->vm;
+    JNIEnv* env = nullptr;
+    bool attached = false;
+    jint getEnvRes = vm->GetEnv((void**)&env, JNI_VERSION_1_6);
+    if (getEnvRes == JNI_EDETACHED) {
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
+        attached = true;
+    } else if (getEnvRes != JNI_OK || !env) {
+        return;
+    }
+
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jclass clazz = env->GetObjectClass(gMobile.android->activity->clazz);
+    if (clazz) {
+        jmethodID mid = env->GetStaticMethodID(clazz, "setPreferredRefreshRate", "(F)V");
+        if (mid) {
+            env->CallStaticVoidMethod(clazz, mid, (jfloat)targetFps);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
+        env->DeleteLocalRef(clazz);
+    }
+    if (attached) vm->DetachCurrentThread();
+}
+
+static int64_t sLastPresentNs = 0;
+
+// Frame rate limiter and pacer.
+// Enforces minimum frame spacing without burning CPU cycles in busy-wait loops.
+static void syncMobileFrameRate(int targetFps, float speed) {
+    if (targetFps < 30) targetFps = 30;
+    if (targetFps > 144) targetFps = 144;
+    updateWindowRefreshRate((float)targetFps);
+
+    if (speed > 1.05f) {
+        targetFps = (int)((float)targetFps * speed);
+    }
+    int64_t framePeriodNs = 1000000000ll / targetFps;
+
+    int64_t nowNs = port_host_time_ns();
+    if (sLastPresentNs != 0) {
+        int64_t elapsedNs = nowNs - sLastPresentNs;
+        if (elapsedNs < framePeriodNs) {
+            int64_t waitNs = framePeriodNs - elapsedNs;
+            if (waitNs > 500000ll) {
+                struct timespec req;
+                req.tv_sec = waitNs / 1000000000ll;
+                req.tv_nsec = waitNs % 1000000000ll;
+                nanosleep(&req, nullptr);
+            }
+        }
+    }
+
+    sLastPresentNs = port_host_time_ns();
+}
+
 extern "C" __attribute__((visibility("default"))) void port_android_main(struct android_app* app, uintptr_t windowBase, size_t windowSize) {
     LOGI("==================================================");
     LOGI("GalaxyMobile: Native flat-screen mobile initialized");
@@ -963,6 +1036,9 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
     a.saveRoot = internalPath + "/nand";
     mkdir(a.saveRoot.c_str(), 0770);
     mobile_ui::get().setSavePath(a.saveRoot + (isPlus ? "/touch_settings_plus.ini" : "/touch_settings.ini"));
+    int initialFps = mobile_ui::get().settings().targetFps;
+    if (mobile_ui::get().settings().batterySaver) initialFps = 30;
+    updateWindowRefreshRate((float)initialFps);
 
     std::string primaryLog = "/sdcard/GalaxyData/galaxy_log.txt";
     FILE* tst = fopen(primaryLog.c_str(), "a");
@@ -973,6 +1049,7 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         port_log_file((ext + "/galaxy_log.txt").c_str());
     }
     gpu::setShaderCachePath((std::string(app->activity->internalDataPath) + "/shaders.bin").c_str());
+    gpu::setVkPipelineCachePath((std::string(app->activity->internalDataPath) + "/vk_pipeline_cache.bin").c_str());
 
     // Search for game data files
     a.dataRoot = findGameData(ext);
@@ -1075,6 +1152,28 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
         port_input_set(0, &a.pad);
 
 
+        // A Vulkan device can be lost mid-session (driver reset, GPU fault).
+        // Rendering cannot continue on it, so tear the backend down and keep the
+        // game running on OpenGL ES - the same fallback used when Vulkan fails to
+        // initialise.
+        if (a.vkReady && gpu::VkRenderer::get().hasFailed()) {
+            LOGE("Vulkan renderer failed at runtime; falling back to OpenGL ES 3.2");
+            if (a.vkTarget.framebuffer) {
+                gpu::VkRenderer::get().destroyTarget(a.vkTarget);
+            }
+            a.vkTarget = gpu::VkTarget{};
+            a.targetReady = false;
+            gpu::VkRenderer::get().shutdown();
+            a.vkReady = false;
+            if (initEgl(a) && createSurface(a)) {
+                mobile_ui::get().setActiveBackend(0);
+                LOGI("OpenGL ES 3.2 fallback renderer active");
+            } else {
+                LOGE("OpenGL ES fallback failed too; no rendering backend is available");
+            }
+            continue;
+        }
+
         // Presentation & Render Loop
         if (a.vkReady) {
             gpu::VkRenderer& vkr = gpu::VkRenderer::get();
@@ -1110,39 +1209,36 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                 int64_t renderStartNs = port_host_time_ns();
                 // Render into offscreen target
                 vkr.render(a.vkTarget, nullptr, nullptr, gpu::HudMode::Inline);
+                int64_t renderEndNs = port_host_time_ns();
+                port_perf_render(renderEndNs - renderStartNs, 0);
+                mobile_ui::get().reportGpuRenderTime(renderEndNs - renderStartNs);
 
                 // Present to swapchain with pillarboxing
                 updateViewport(a);
                 vkr.present(a.vkTarget, a.vpX, a.vpY, a.vpW, a.vpH);
-                int64_t renderEndNs = port_host_time_ns();
-                port_perf_render(renderEndNs - renderStartNs, 0);
+                mobile_ui::get().reportFramePresented();
 
-                // Frame pacing
-                static int64_t lastVkFrameNs = 0;
+                // Frame pacing: enforce minimum time spacing between presents so FPS NEVER exceeds targetFps
                 int targetFps = mobile_ui::get().settings().targetFps;
-                if (mobile_ui::get().settings().batterySaver) {
-                    targetFps = 30;
-                }
-                float speed = port_get_game_speed();
-                if (speed > 1.05f) {
-                    targetFps = (int)((float)targetFps * speed);
-                }
-                if (targetFps > 0) {
-                    int64_t framePeriodNs = 1000000000ll / targetFps;
-                    int64_t nowNs = port_host_time_ns();
-                    int64_t elapsedNs = nowNs - lastVkFrameNs;
-                    if (elapsedNs < framePeriodNs && lastVkFrameNs != 0) {
-                        int64_t sleepUs = (framePeriodNs - elapsedNs) / 1000;
-                        if (sleepUs > 300) {
-                            usleep((useconds_t)sleepUs);
-                        }
-                    }
-                    lastVkFrameNs = port_host_time_ns();
-                }
+                if (mobile_ui::get().settings().batterySaver) targetFps = 30;
+                syncMobileFrameRate(targetFps, port_get_game_speed());
             } else {
-                if (mobile_ui::get().needsRedraw() && a.targetReady && vkr.hasFrame()) {
+                int targetFps = mobile_ui::get().settings().targetFps;
+                if (mobile_ui::get().settings().batterySaver) targetFps = 30;
+                float speed = port_get_game_speed();
+                int effectiveFps = (speed > 1.05f) ? (int)((float)targetFps * speed) : targetFps;
+                int64_t framePeriodNs = 1000000000ll / (effectiveFps > 0 ? effectiveFps : 60);
+                int64_t nowNs = port_host_time_ns();
+
+                bool highRefreshSlot = (targetFps > 60 && a.targetReady && vkr.hasFrame() && (nowNs - sLastPresentNs >= framePeriodNs));
+                bool uiRedrawNeeded = (mobile_ui::get().needsRedraw() && a.targetReady && vkr.hasFrame() &&
+                                       (!a.gameBooted || port_is_paused() || mobile_ui::get().isSettingsOpen()));
+
+                if (highRefreshSlot || uiRedrawNeeded) {
+                    syncMobileFrameRate(targetFps, 1.0f);
                     updateViewport(a);
                     vkr.present(a.vkTarget, a.vpX, a.vpY, a.vpW, a.vpH);
+                    mobile_ui::get().reportFramePresented();
                 } else {
                     usleep(1000);
                 }
@@ -1219,66 +1315,64 @@ extern "C" __attribute__((visibility("default"))) void port_android_main(struct 
                 eglSwapBuffers(a.display, a.surface);
                 int64_t renderEndNs = port_host_time_ns();
                 port_perf_render(renderEndNs - renderStartNs, 0);
+                mobile_ui::get().reportGpuRenderTime(renderEndNs - renderStartNs);
+                mobile_ui::get().reportFramePresented();
 
-                // Precise frame pacer (60, 90, 120 FPS target, scaled by game speed)
-                static int64_t lastFrameNs = 0;
+                // Frame pacing: enforce minimum time spacing between presents so FPS NEVER exceeds targetFps
                 int targetFps = mobile_ui::get().settings().targetFps;
-                if (mobile_ui::get().settings().batterySaver) {
-                    targetFps = 30;
-                }
+                if (mobile_ui::get().settings().batterySaver) targetFps = 30;
+                syncMobileFrameRate(targetFps, port_get_game_speed());
+            } else {
+                int targetFps = mobile_ui::get().settings().targetFps;
+                if (mobile_ui::get().settings().batterySaver) targetFps = 30;
                 float speed = port_get_game_speed();
-                if (speed > 1.05f) {
-                    targetFps = (int)((float)targetFps * speed);
-                }
-                if (targetFps > 0) {
-                    int64_t framePeriodNs = 1000000000ll / targetFps;
-                    int64_t nowNs = port_host_time_ns();
-                    int64_t elapsedNs = nowNs - lastFrameNs;
-                    if (elapsedNs < framePeriodNs && lastFrameNs != 0) {
-                        int64_t sleepUs = (framePeriodNs - elapsedNs) / 1000;
-                        if (sleepUs > 300) {
-                            usleep((useconds_t)sleepUs);
-                        }
+                int effectiveFps = (speed > 1.05f) ? (int)((float)targetFps * speed) : targetFps;
+                int64_t framePeriodNs = 1000000000ll / (effectiveFps > 0 ? effectiveFps : 60);
+                int64_t nowNs = port_host_time_ns();
+
+                bool highRefreshSlot = (targetFps > 60 && a.targetReady && r.hasFrame() && (nowNs - sLastPresentNs >= framePeriodNs));
+                bool uiRedrawNeeded = (mobile_ui::get().needsRedraw() &&
+                                       (!a.gameBooted || port_is_paused() || mobile_ui::get().isSettingsOpen()));
+
+                if (highRefreshSlot || uiRedrawNeeded) {
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                    glViewport(0, 0, a.screenWidth, a.screenHeight);
+                    glDisable(GL_SCISSOR_TEST);
+                    glDisable(GL_DEPTH_TEST);
+                    glDisable(GL_CULL_FACE);
+                    glDisable(GL_BLEND);
+                    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+                    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                    glClear(GL_COLOR_BUFFER_BIT);
+
+                    updateViewport(a);
+                    if (a.targetReady && r.hasFrame()) {
+                        glBindFramebuffer(GL_READ_FRAMEBUFFER, a.efbTarget.fbo);
+                        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+                        glBlitFramebuffer(0, 0, a.efbTarget.width, a.efbTarget.height,
+                                          a.vpX, a.vpY, a.vpX + a.vpW, a.vpY + a.vpH,
+                                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
                     }
-                    lastFrameNs = port_host_time_ns();
+
+                    syncMobileFrameRate(targetFps, 1.0f);
+
+                    mobile_ui::get().render(a.screenWidth, a.screenHeight);
+                    eglSwapBuffers(a.display, a.surface);
+                    mobile_ui::get().reportFramePresented();
+                } else if (!r.hasFrame()) {
+                    // Idle screen while waiting for the game to boot or submit frames
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                    glViewport(0, 0, a.screenWidth, a.screenHeight);
+                    glClearColor(0.04f, 0.05f, 0.10f, 1.0f);  // Galaxy deep blue
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    mobile_ui::get().render(a.screenWidth, a.screenHeight);
+                    eglSwapBuffers(a.display, a.surface);
+                    usleep(16000);
+                } else {
+                    usleep(1000);
                 }
-            } else {
-                if (mobile_ui::get().needsRedraw()) {
-                glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                glViewport(0, 0, a.screenWidth, a.screenHeight);
-                glDisable(GL_SCISSOR_TEST);
-                glDisable(GL_DEPTH_TEST);
-                glDisable(GL_CULL_FACE);
-                glDisable(GL_BLEND);
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-                glClear(GL_COLOR_BUFFER_BIT);
-
-                updateViewport(a);
-                if (a.targetReady && r.hasFrame()) {
-                    glBindFramebuffer(GL_READ_FRAMEBUFFER, a.efbTarget.fbo);
-                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-                    glBlitFramebuffer(0, 0, a.efbTarget.width, a.efbTarget.height,
-                                      a.vpX, a.vpY, a.vpX + a.vpW, a.vpY + a.vpH,
-                                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
-                }
-
-                mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                eglSwapBuffers(a.display, a.surface);
-            } else if (!r.hasFrame()) {
-                // Idle screen while waiting for the game to boot or submit frames
-                glBindFramebuffer(GL_FRAMEBUFFER, 0);
-                glViewport(0, 0, a.screenWidth, a.screenHeight);
-                glClearColor(0.04f, 0.05f, 0.10f, 1.0f);  // Galaxy deep blue
-                glClear(GL_COLOR_BUFFER_BIT);
-                mobile_ui::get().render(a.screenWidth, a.screenHeight);
-                eglSwapBuffers(a.display, a.surface);
-                usleep(16000);
-            } else {
-                usleep(1000);
             }
-        }
     }
 }
 

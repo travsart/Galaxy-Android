@@ -154,7 +154,7 @@ def main():
         "--auto-add-overlay",
         "-I", ANDROID_JAR,
         "--java", gen_dir,
-        "--min-sdk-version", "30",
+        "--min-sdk-version", "28",
         "--target-sdk-version", "34"
     ])
 
@@ -168,7 +168,7 @@ def main():
     # 3. Desugar and Dex with D8
     class_files = glob.glob(os.path.join(classes_dir, "**", "*.class"), recursive=True)
     print(f"[D8] Converting {len(class_files)} classes to classes.dex...")
-    run([D8, "--output", dex_dir, "--lib", ANDROID_JAR, "--min-api", "30"] + class_files)
+    run([D8, "--output", dex_dir, "--lib", ANDROID_JAR, "--min-api", "28"] + class_files)
 
     # 4. Copy and strip wrap.sh and native libraries into arm64-v8a
     wrap_src = os.path.join(ROOT, "platform", "android", "wrap.sh")
@@ -217,6 +217,14 @@ def main():
         for lib in os.listdir(py_lib_dir):
             if lib.endswith(".so"):
                 shutil.copyfile(os.path.join(py_lib_dir, lib), os.path.join(arm64_dir, lib))
+
+    # Extra prebuilt libraries (e.g. Vulkan validation layers)
+    extra_libs_dir = os.path.join(ROOT, "platform", "mobile", "libs", "arm64-v8a")
+    if os.path.isdir(extra_libs_dir):
+        for lib in os.listdir(extra_libs_dir):
+            if lib.endswith(".so"):
+                print(f"[EXTRA LIB] Packaging {lib}...")
+                shutil.copyfile(os.path.join(extra_libs_dir, lib), os.path.join(arm64_dir, lib))
 
     # 5. Add dex, assets, and lib into base.apk
     dex_file = os.path.join(dex_dir, "classes.dex")

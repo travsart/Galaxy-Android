@@ -34,6 +34,9 @@ namespace std {
     }
 
     // ---- C++98 adaptor base classes ---------------------------------------
+    // libc++ in C++20 mode removed these in LLVM 15+ (150000). In older libc++ (e.g. NDK r25c),
+    // they are already declared by <functional>.
+#if !defined(_LIBCPP_VERSION) || (_LIBCPP_VERSION >= 150000 && !defined(_LIBCPP_ENABLE_CXX17_REMOVED_UNARY_BINARY_FUNCTION))
     template < class Arg, class Result >
     struct unary_function {
         typedef Arg argument_type;
@@ -46,6 +49,7 @@ namespace std {
         typedef Arg2 second_argument_type;
         typedef Result result_type;
     };
+#endif // unary_function and binary_function base classes
 
     // ---- binders ------------------------------------------------------------
     template < class Func >
@@ -157,7 +161,7 @@ namespace std {
     template < class Result, class Type, class Arg >
     inline mem_fun1_ref_t< Result, Type, Arg > mem_fun_ref(Result (Type::*p)(Arg)) { return mem_fun1_ref_t< Result, Type, Arg >(p); }
 
-    // MSL spelling of mem_fun.
+    // MSL spelling of mem_fun (available across all compilers).
     template < class Result, class Type >
     inline mem_fun_t< Result, Type > mem_func(Result (Type::*p)()) { return mem_fun_t< Result, Type >(p); }
     template < class Result, class Type >
@@ -167,7 +171,8 @@ namespace std {
     template < class Result, class Type, class Arg >
     inline const_mem_fun1_t< Result, Type, Arg > mem_func(Result (Type::*p)(Arg) const) { return const_mem_fun1_t< Result, Type, Arg >(p); }
 
-    // ---- negators / function pointers ------------------------------------------
+#if !defined(_LIBCPP_VERSION) || (_LIBCPP_VERSION >= 150000 && !defined(_LIBCPP_ENABLE_CXX20_REMOVED_NEGATORS))
+    // ---- negators ---------------------------------------------------------------
     template < class Predicate >
     class unary_negate : public unary_function< typename Predicate::argument_type, bool > {
     public:
@@ -182,6 +187,7 @@ namespace std {
     inline unary_negate< Predicate > not1(const Predicate& p) {
         return unary_negate< Predicate >(p);
     }
+#endif
 
     template < class Arg, class Result >
     class pointer_to_unary_function : public unary_function< Arg, Result > {

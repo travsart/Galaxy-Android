@@ -44,6 +44,9 @@ void queueGlTextureDelete(uint32_t tex) {
 
 TexImage::~TexImage() {
     queueGlTextureDelete(glTex);
+    // The Vulkan renderer keeps its own images on the TexImage too (see
+    // vk_renderer.cpp): release them on the render thread as well.
+    queueVkTextureDelete(vkImage, vkMemory, vkView);
 }
 
 static void flushDeletes() {
@@ -654,7 +657,7 @@ CopyTex& Renderer::Impl::copyTex(u64 key, int w, int h) {
 // forgets a copy after 8 frames, and a scene's buffers are copied to every
 // frame.
 void Renderer::Impl::evictCopies() {
-    const u64 kKeepFrames = 120;
+    const u64 kKeepFrames = 16;
     for (auto it = copies.begin(); it != copies.end();) {
         if (it->first != kXfbCopyKey && it->second.frame + kKeepFrames < cur->number) {
             glDeleteTextures(1, &it->second.tex);
@@ -981,6 +984,7 @@ void Renderer::Impl::doCopy(const Item& it, EfbTarget& src, Renderer& r, bool vr
         }
         if (mask) {
             glClear(mask);
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         }
     }
 }

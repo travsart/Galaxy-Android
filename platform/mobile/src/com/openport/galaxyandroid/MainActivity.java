@@ -75,7 +75,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
 
         setContentView(R.layout.activity_main);
 
@@ -98,7 +98,7 @@ public class MainActivity extends Activity {
 
         if (isGameDataReady()) {
             btnLaunchGame.setVisibility(View.VISIBLE);
-            btnLaunchGame.setText("Launch Installed Game \uD83D\uDE80");
+            btnLaunchGame.setText("Launch Installed Game");
             txtProgressStatus.setText("Installed game data verified! Tap to launch or select an ISO below to reinstall.");
         }
 
@@ -163,6 +163,14 @@ public class MainActivity extends Activity {
                     Intent generic = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
                     startActivity(generic);
                 }
+            }
+        } else {
+            if (checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                appendLog("[Permission] Requesting legacy storage permission for game data...");
+                requestPermissions(new String[]{
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE,
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+                }, 2001);
             }
         }
     }
@@ -466,7 +474,7 @@ public class MainActivity extends Activity {
             txtProgressStatus.setText(R.string.status_done);
             appendLog("[SUCCESS] " + (message != null ? message : "Conversion complete!"));
             btnLaunchGame.setVisibility(View.VISIBLE);
-            btnLaunchGame.setText("Launch Game \uD83D\uDE80");
+            btnLaunchGame.setText("Launch Game");
             Toast.makeText(this, "Game ready! Launching game now...", Toast.LENGTH_SHORT).show();
             // Automatically launch into game!
             mHandler.postDelayed(this::launchGameDirectly, 1000);
