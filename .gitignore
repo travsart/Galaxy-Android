@@ -47,3 +47,4 @@ save_*.png
 *.bin
 *.bdl
 platform/mobile/libs/
+keystore.properties

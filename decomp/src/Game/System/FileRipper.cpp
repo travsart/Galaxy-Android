@@ -48,6 +48,9 @@ void* FileRipper::loadToMainRAM(const char* fpath, u8* dest, bool decompress, JK
     }
 
     u32 fsize = (MR::getFileSize(fpath, false) + 0x1f) / 0x20 * 0x20;
+    if (fsize == 0) {
+        return nullptr;
+    }
 
     DVDFileInfo fileInfo;
     if (!DVDOpen(fpath, &fileInfo)) {

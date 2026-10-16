@@ -16,6 +16,13 @@ void AreaForm_FORCE_MATCH_SDATA2() {
     (void)500.0f;
 }
 
+void AreaForm::init(const JMapInfoIter&) {
+}
+
+bool AreaForm::isInVolume(const TVec3f&) const {
+    return false;
+}
+
 AreaFormCube::AreaFormCube(int a1) {
     _8 = a1;
     mTranslation.x = 0.0f;

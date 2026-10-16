@@ -56,7 +56,8 @@ public class MainActivity extends Activity {
         File fst = new File(dataDir, "sys/fst.bin");
         File files = new File(dataDir, "files");
         File coin = new File(dataDir, "files/ObjectData/Coin.arc");
-        if (!fst.exists() || !fst.isFile() || !files.exists() || !files.isDirectory() || !coin.exists()) {
+        File titleLogo = new File(dataDir, "files/LayoutData/TitleLogo.arc");
+        if (!fst.exists() || !fst.isFile() || !files.exists() || !files.isDirectory() || !coin.exists() || !titleLogo.isFile() || titleLogo.length() == 0) {
             return false;
         }
         // Verify Coin.arc is converted to little-endian ARM64 ("CRAR")

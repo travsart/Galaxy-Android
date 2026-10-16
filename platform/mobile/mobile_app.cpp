@@ -186,6 +186,9 @@ bool checkGameFolder(const std::string& dir, bool* ready) {
     if (stat((dir + "/sys/fst.bin").c_str(), &st) != 0 || !S_ISREG(st.st_mode) || !isDir(dir + "/files")) {
         return false;
     }
+    if (stat((dir + "/files/LayoutData/TitleLogo.arc").c_str(), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) {
+        return false;
+    }
     char magic[4] = {};
     FILE* f = fopen((dir + "/files/ObjectData/Coin.arc").c_str(), "rb");
     bool converted = f && fread(magic, 1, 4, f) == 4 && memcmp(magic, "CRAR", 4) == 0;

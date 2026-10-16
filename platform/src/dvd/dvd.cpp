@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -346,6 +347,13 @@ static std::deque<ReadRequest> sPending;       // not yet started
 static std::deque<DVDCommandBlock*> sDone;     // finished, callbacks pending
 static DVDCommandBlock* sActive = nullptr;     // being read by the worker
 static OSThreadQueue sSyncQueue;
+static std::atomic_flag sLoggedInvalidRead = ATOMIC_FLAG_INIT;
+
+static void logInvalidRead(s32 length, s32 offset) {
+    if (!sLoggedInvalidRead.test_and_set()) {
+        port_log("dvd: rejecting invalid read length=%d offset=%d", length, offset);
+    }
+}
 
 static int openEntry(u32 entry) {
     FstEntry& fe = sFst[entry];
@@ -482,6 +490,10 @@ BOOL DVDClose(DVDFileInfo* fileInfo) {
 
 BOOL DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset, DVDCallback callback, s32 prio) {
     (void)prio;
+    if (length <= 0 || offset < 0) {
+        logInvalidRead(length, offset);
+        return FALSE;
+    }
     fileInfo->callback = callback;
     DVDCommandBlock* b = &fileInfo->cb;
     b->addr = addr;
@@ -494,6 +506,10 @@ BOOL DVDReadAsyncPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset,
 
 s32 DVDReadPrio(DVDFileInfo* fileInfo, void* addr, s32 length, s32 offset, s32 prio) {
     (void)prio;
+    if (length <= 0 || offset < 0) {
+        logInvalidRead(length, offset);
+        return -3;
+    }
     DVDCommandBlock* b = &fileInfo->cb;
     fileInfo->callback = nullptr;
     b->addr = addr;

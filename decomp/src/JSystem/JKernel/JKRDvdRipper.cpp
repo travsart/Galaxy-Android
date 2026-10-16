@@ -47,6 +47,9 @@ void* JKRDvdRipper::loadToMainRAM(JKRDvdFile* dvdFile, u8* dst, JKRExpandSwitch 
     u8* mem = nullptr;
 
     fileSizeAligned = ALIGN_NEXT(dvdFile->getFileSize(), 32);
+    if (fileSizeAligned == 0 || offset > static_cast<u32>(fileSizeAligned)) {
+        return nullptr;
+    }
     if (expandSwitch == EXPAND_SWITCH_UNKNOWN1) {
         u8 buffer[0x3F];
         u8* bufPtr = reinterpret_cast< u8* >(ALIGN_NEXT(reinterpret_cast< uintptr_t >(buffer), 32));
