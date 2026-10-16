@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build and package the unified GalaxyAndroid.apk (Game + In-App Disc Loader)."""
+import argparse
 import glob
 import os
 import shutil
@@ -67,9 +68,8 @@ if not JAVAC:
 if not JAVAC:
     JAVAC = "javac"
 
-BUILD_MOBILE = os.path.join(ROOT, "build-mobile")
+BUILD_MOBILE = os.environ.get("GALAXY_BUILD_DIR", os.path.join(ROOT, "build-mobile"))
 OUT = os.path.join(ROOT, "out-mobile")
-KEYSTORE = os.path.join(ROOT, "platform", "mobile", "release.keystore")
 INSTALLER_DIR = os.path.join(ROOT, "installer-mobile")
 
 def run(cmd):
@@ -77,6 +77,13 @@ def run(cmd):
     subprocess.run(cmd, check=True)
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--build-type", choices=("debug", "release"), default="debug")
+    parser.add_argument("--keystore", help="signing keystore")
+    parser.add_argument("--key-alias", help="signing key alias")
+    parser.add_argument("--output", help="destination APK path")
+    args = parser.parse_args()
+
     print("=== Packaging Unified GalaxyAndroid.apk (com.openport.galaxyandroid) ===")
     print(f"  SDK: {SDK}")
     print(f"  Build Tools: {BUILD_TOOLS_DIR}")
@@ -101,14 +108,32 @@ def main():
     arm64_dir = os.path.join(apk_dir, "lib", "arm64-v8a")
     os.makedirs(arm64_dir, exist_ok=True)
 
-    # 0. Ensure debug keystore exists
-    if not os.path.exists(KEYSTORE):
+    # 0. Select a debug or explicitly configured release signing key.
+    if args.build_type == "release":
+        keystore = args.keystore or os.environ.get("ANDROID_KEYSTORE")
+        key_alias = args.key_alias or os.environ.get("ANDROID_KEY_ALIAS")
+        store_password = os.environ.get("ANDROID_KEYSTORE_PASSWORD")
+        key_password = os.environ.get("ANDROID_KEY_PASSWORD")
+        if not all((keystore, key_alias, store_password, key_password)):
+            raise RuntimeError(
+                "Release signing requires --keystore, --key-alias, ANDROID_KEYSTORE_PASSWORD, "
+                "and ANDROID_KEY_PASSWORD."
+            )
+        if not os.path.isfile(keystore):
+            raise RuntimeError(f"Release keystore not found: {keystore}")
+        signer_passwords = ("env:ANDROID_KEYSTORE_PASSWORD", "env:ANDROID_KEY_PASSWORD")
+    else:
+        keystore = os.path.join(ROOT, "out", "debug.keystore")
+        key_alias = "androiddebugkey"
+        signer_passwords = ("pass:android", "pass:android")
+
+    if args.build_type == "debug" and not os.path.exists(keystore):
         print("[KEYSTORE] Generating debug keystore...")
         keytool = shutil.which("keytool") or "keytool"
         subprocess.run([
-            keytool, "-genkeypair", "-keystore", KEYSTORE,
+            keytool, "-genkeypair", "-keystore", keystore,
             "-storepass", "android", "-keypass", "android",
-            "-alias", "androiddebugkey", "-keyalg", "RSA", "-keysize", "2048",
+            "-alias", key_alias, "-keyalg", "RSA", "-keysize", "2048",
             "-validity", "10000", "-dname", "CN=GalaxyAndroid Debug,O=Local,C=US"
         ], check=True)
 
@@ -236,14 +261,16 @@ def main():
     run([ZIPALIGN, "-f", "-P", "16", "4", base_apk, aligned_apk])
 
     # 7. Apksigner (v1 + v2 + v3 signing)
-    final_apk = os.path.join(OUT, "GalaxyAndroid.apk")
+    final_apk = args.output or os.path.join(OUT, f"GalaxyAndroid-{args.build_type}.apk")
+    os.makedirs(os.path.dirname(os.path.abspath(final_apk)), exist_ok=True)
     if os.path.exists(final_apk):
         os.remove(final_apk)
     run([
         APKSIGNER, "sign",
-        "--ks", KEYSTORE,
-        "--ks-pass", "pass:android",
-        "--key-pass", "pass:android",
+        "--ks", keystore,
+        "--ks-key-alias", key_alias,
+        "--ks-pass", signer_passwords[0],
+        "--key-pass", signer_passwords[1],
         "--out", final_apk,
         aligned_apk
     ])

@@ -137,13 +137,19 @@ With the unified **GalaxyAndroid** package:
 
 ### Native Library & Packaging
 ```bash
-# 1. Compile native engine library (libgame.so)
-ninja -C build-mobile game
-
-# 2. Package and sign unified APK
-python package_mobile_apk.py
+# Build native libraries, package the APK, and sign with the debug key
+python3 build_android_apk.py --build-type debug
 ```
-The output APK is generated at `out-mobile/GalaxyAndroid.apk`.
+
+For a release APK, provide a release keystore and credentials through the environment:
+```bash
+export ANDROID_KEYSTORE=/path/to/release.keystore
+export ANDROID_KEY_ALIAS=your-key-alias
+export ANDROID_KEYSTORE_PASSWORD='your-keystore-password'
+export ANDROID_KEY_PASSWORD='your-key-password'
+python3 build_android_apk.py --build-type release
+```
+The APK is generated at `out-mobile/GalaxyAndroid-debug.apk` or `out-mobile/GalaxyAndroid-release.apk`.
 
 ---
 
